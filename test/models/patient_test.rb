@@ -1,6 +1,8 @@
 require 'test_helper'
 
 class PatientTest < ActiveSupport::TestCase
+  extend Minitest::OptionalRetry
+
   before do
     @user = create :user
     @patient = create :patient, other_phone: '111-222-3333',
@@ -8,8 +10,8 @@ class PatientTest < ActiveSupport::TestCase
 
     @patient2 = create :patient, other_phone: '333-222-3333',
                                 other_contact: 'Foobar'
-    @call = create :call, patient: @patient,
-                          status: 'Reached patient'
+    @patient.calls.create attributes_for(:call, created_by: @user, status: 'Reached patient')
+    @call = @patient.calls.first
     create_language_config
   end
 
@@ -37,6 +39,7 @@ class PatientTest < ActiveSupport::TestCase
       @new_patient.reload
       refute_nil @new_patient.fulfillment
     end
+
   end
 
   describe 'validations' do
@@ -92,34 +95,101 @@ class PatientTest < ActiveSupport::TestCase
     it 'should save the identifer' do
       assert_equal @patient.identifier, "#{@patient.line[0]}#{@patient.primary_phone[-5]}-#{@patient.primary_phone[-4..-1]}"
     end
+
+    it 'should enforce unique phone numbers' do
+      @patient.primary_phone = '111-222-3333'
+      @patient.save
+      assert @patient.valid?
+
+      @patient2.primary_phone = '111-222-3333'
+      refute @patient2.valid?
+    end
+
+    it 'should throw two different error messages for duplicates found on same line versus different line' do
+      marylandPatient = create :patient, name: 'Susan A in MD',
+                                         primary_phone: '777-777-7777',
+                                         line: 'MD'
+      sameLineDuplicate = create :patient, name: 'Susan B in MD',
+                                           line: 'MD'
+      diffLineDuplicate = create :patient, name: 'Susan B in VA',
+                                           line: 'VA'
+
+      sameLineDuplicate.primary_phone = '777-777-7777'
+      diffLineDuplicate.primary_phone = '777-777-7777'
+
+      sameLineDuplicate.save
+      diffLineDuplicate.save
+
+      refute sameLineDuplicate.valid?
+      refute diffLineDuplicate.valid?
+
+      error1 = sameLineDuplicate.errors.messages[:this_phone_number_is_already_taken]
+      error2 = diffLineDuplicate.errors.messages[:this_phone_number_is_already_taken]
+
+      assert_not_equal error1, error2
+
+    end
   end
 
   describe 'pledge_summary' do
-    # TODO: needs timecopping
     it "should return proper pledge summaries for various timespans" do
-      @patient.update appointment_date: (Date.today + 4), fund_pledge: 300
-      @patient2.update appointment_date: (Date.today + 8), fund_pledge: 500, pledge_sent: true
-      assert_equal '{:pledged=>0, :sent=>0}', Patient.pledged_status_summary(1).to_s
-      assert_equal '{:pledged=>300, :sent=>0}', Patient.pledged_status_summary.to_s
-      # TODO Timecop this test
-      # assert_equal '{:pledged=>300, :sent=>500}', Patient.pledged_status_summary(10).to_s
+      @patient.update appointment_date: 2.days.from_now, fund_pledge: 300
+      @patient2.update appointment_date: 4.days.from_now, fund_pledge: 500,
+                       pledge_sent: true, clinic: create(:clinic)
+      shaped_patient = patient_to_hash @patient
+      shaped_patient2 = patient_to_hash @patient2
+
+      # Testing dates is hard, so we use name as a proxy here
+      assert_equal shaped_patient[:name],
+                   Patient.pledged_status_summary(:DC)[:pledged][0][:name]
+      assert_equal shaped_patient2[:name],
+                   Patient.pledged_status_summary(:DC)[:sent][0][:name]
     end
   end
 
   describe 'callbacks' do
-    %w(name other_contact).each do |field|
-      it "should strip whitespace from before and after #{field}" do
-        @patient[field] = '   Yolo Goat   '
-        @patient.save
-        assert_equal 'Yolo Goat', @patient[field]
+    describe 'clean_fields' do
+      %w(name other_contact).each do |field|
+        it "should strip whitespace from before and after #{field}" do
+          @patient[field] = '   Yolo Goat   '
+          @patient.save
+          assert_equal 'Yolo Goat', @patient[field]
+        end
+      end
+
+      %w(primary_phone other_phone).each do |field|
+        it "should remove nondigits on save from #{field}" do
+          @patient[field] = '111-222-3333'
+          @patient.save
+          assert_equal '1112223333', @patient[field]
+        end
       end
     end
 
-    %w(primary_phone other_phone).each do |field|
-      it "should remove nondigits on save from #{field}" do
-        @patient[field] = '111-222-3333'
-        @patient.save
-        assert_equal '1112223333', @patient[field]
+    describe 'confirm still urgent' do
+      before do
+        create :clinic
+        @patient = create :patient, urgent_flag: true,
+                                    clinic: Clinic.first,
+                                    appointment_date: 2.days.from_now,
+                                    fund_pledge: 300
+      end
+
+      %w[pledge_sent resolved_without_fund].each do |attrib|
+        it "should unmark urgent after update if #{attrib}" do
+          @patient[attrib.to_sym] = true
+          @patient.save
+
+          refute @patient.urgent_flag
+        end
+      end
+    end
+
+    describe 'blow away associated events on destroy' do
+      it 'should nuke events in addition to the patient on destroy' do
+        assert_difference 'Event.count', -1 do
+          @patient.destroy
+        end
       end
     end
   end
@@ -199,7 +269,8 @@ class PatientTest < ActiveSupport::TestCase
   describe 'other methods' do
     before do
       @patient = create :patient, primary_phone: '111-222-3333',
-                                  other_phone: '111-222-4444'
+                                  other_phone: '111-222-4444',
+                                  name: 'Yolo Goat Bart Simpson'
     end
 
     it 'primary_phone_display -- should be hyphenated phone' do
@@ -210,6 +281,10 @@ class PatientTest < ActiveSupport::TestCase
     it 'secondary_phone_display - should be hyphenated other phone' do
       refute_equal @patient.other_phone, @patient.other_phone_display
       assert_equal '111-222-4444', @patient.other_phone_display
+    end
+
+    it 'initials - creates proper initials' do
+      assert_equal 'YGBS', @patient.initials
     end
   end
 
@@ -254,11 +329,7 @@ class PatientTest < ActiveSupport::TestCase
         create :patient, urgent_flag: true, line: 'MD'
       end
 
-      it 'should return urgent patients' do
-        assert_equal 3, Patient.urgent_patients.count
-      end
-
-      it 'should scope to a line if asked' do
+      it 'should return urgent patients by line' do
         assert_equal 2, Patient.urgent_patients('DC').count
         assert_equal 1, Patient.urgent_patients('MD').count
       end
@@ -331,6 +402,27 @@ class PatientTest < ActiveSupport::TestCase
         assert_equal hash, Patient.contacted_since(datetime)
       end
     end
+
+    describe 'destroy_associated_events method' do
+      it 'should nuke associated events on patient destroy' do
+        assert_difference 'Event.count', -1 do
+          @patient.destroy_associated_events
+        end
+      end
+    end
+
+    describe 'okay_to_destroy? method' do
+      it 'should return false if pledge is sent' do
+        @patient.update appointment_date: 2.days.from_now,
+                        fund_pledge: 100,
+                        clinic: (create :clinic),
+                        pledge_sent: true
+        refute @patient.okay_to_destroy?
+
+        @patient[:pledge_sent] = false
+        assert @patient.okay_to_destroy?
+      end
+    end
   end
 
   describe 'pledge_sent validation' do
@@ -383,6 +475,29 @@ class PatientTest < ActiveSupport::TestCase
       assert @patient.pledge_info_present?
       assert_equal ["DCAF pledge field cannot be blank"], @patient.pledge_info_errors
     end
+
+    it 'should update sent by and sent at when sending the pledge' do
+      @user = create :user
+      @patient.fund_pledge = 500
+      @patient.clinic = @clinic
+      @patient.appointment_date = 14.days.from_now
+      @patient.last_edited_by = @user
+      @patient.fund_pledge = true
+      @patient.pledge_sent = true
+      @patient.update
+      @patient.reload
+      assert_in_delta Time.zone.now.to_f, @patient.pledge_sent_at.to_f, 15 #used assert_in_delta to account for slight differences in timing. Allows 15 seconds of lag?
+      assert_equal @user, @patient.pledge_sent_by
+    end
+
+    it 'should set pledge sent and sent at to nil if a pledge is cancelled' do
+      @patient.pledge_sent = false
+      @patient.update
+      @patient.reload
+      assert_nil @patient.pledge_sent_by
+      assert_nil @patient.pledge_sent_at
+    end
+
   end
 
   describe 'last menstrual period calculation concern' do
@@ -498,61 +613,61 @@ class PatientTest < ActiveSupport::TestCase
 
     describe 'status method branch 1' do
       it 'should default to "No Contact Made" when a patient has no calls' do
-        assert_equal Patient::STATUSES[:no_contact], @patient.status
+        assert_equal Patient::STATUSES[:no_contact][:key], @patient.status
       end
 
       it 'should default to "No Contact Made" on a patient left voicemail' do
-        create :call, patient: @patient, status: 'Left voicemail'
-        assert_equal Patient::STATUSES[:no_contact], @patient.status
+        @patient.calls.create attributes_for(:call, status: 'Left voicemail')
+        assert_equal Patient::STATUSES[:no_contact][:key], @patient.status
       end
 
       it 'should still say "No Contact Made" if patient leaves voicemail with appointment' do
         @patient.appointment_date = '01/01/2017'
-        assert_equal Patient::STATUSES[:no_contact], @patient.status
+        assert_equal Patient::STATUSES[:no_contact][:key], @patient.status
       end
     end
 
     describe 'status method branch 2' do
       it 'should update to "Needs Appointment" once patient has been reached' do
-        create :call, patient: @patient, status: 'Reached patient'
-        assert_equal Patient::STATUSES[:needs_appt], @patient.status
+        @patient.calls.create attributes_for(:call, status: 'Reached patient')
+        assert_equal Patient::STATUSES[:needs_appt][:key], @patient.status
       end
 
       it 'should update to "Fundraising" once appointment made and patient reached' do
-        create :call, patient: @patient, status: 'Reached patient'
+        @patient.calls.create attributes_for(:call, status: 'Reached patient')
         @patient.appointment_date = '01/01/2017'
-        assert_equal Patient::STATUSES[:fundraising], @patient.status
+        assert_equal Patient::STATUSES[:fundraising][:key], @patient.status
       end
 
       it 'should update to "Sent Pledge" after a pledge has been sent' do
         @patient.pledge_sent = true
-        assert_equal Patient::STATUSES[:pledge_sent], @patient.status
+        assert_equal Patient::STATUSES[:pledge_sent][:key], @patient.status
       end
 
       it 'should update to "Pledge Not Fulfilled" if a pledge has not been fulfilled for 150 days' do
-        @patient.pledge_sent = true 
+        @patient.pledge_sent = true
         @patient.pledge_sent_at = (Time.zone.now - 151.days)
-        assert_equal Patient::STATUSES[:pledge_unfulfilled], @patient.status
+        assert_equal Patient::STATUSES[:pledge_unfulfilled][:key], @patient.status
       end
 
       it 'should update to "Pledge Fulfilled" if a pledge has been fulfilled' do
         @patient.fulfillment.fulfilled = true
-        assert_equal Patient::STATUSES[:fulfilled], @patient.status
+        assert_equal Patient::STATUSES[:fulfilled][:key], @patient.status
       end
 
       # it 'should update to "Pledge Paid" after a pledge has been paid' do
       # end
       it 'should update to "No contact in 120 days" after 120ish days of no calls' do
-        create :call, patient: @patient, status: 'Reached patient', created_at: 121.days.ago
-        assert_equal Patient::STATUSES[:dropoff], @patient.status
+        @patient.calls.create attributes_for(:call, status: 'Reached patient', created_at: 121.days.ago)
+        assert_equal Patient::STATUSES[:dropoff][:key], @patient.status
 
-        create :call, patient: @patient, status: 'Left voicemail', created_at: 120.days.ago
-        assert_equal Patient::STATUSES[:needs_appt], @patient.status
+        @patient.calls.create attributes_for(:call, status: 'Reached patient', created_at: 120.days.ago)
+        assert_equal Patient::STATUSES[:needs_appt][:key], @patient.status
       end
 
       it 'should update to "Resolved Without DCAF" if patient is resolved' do
         @patient.resolved_without_fund = true
-        assert_equal Patient::STATUSES[:resolved], @patient.status
+        assert_equal Patient::STATUSES[:resolved][:key], @patient.status
       end
     end
 
@@ -562,12 +677,12 @@ class PatientTest < ActiveSupport::TestCase
       end
 
       it 'should return false if an unsuccessful call has been made' do
-        create :call, patient: @patient, status: 'Left voicemail'
+        @patient.calls.create attributes_for(:call, status: 'Left voicemail')
         refute @patient.send :contact_made?
       end
 
       it 'should return true if a successful call has been made' do
-        create :call, patient: @patient, status: 'Reached patient'
+        @patient.calls.create attributes_for(:call, status: 'Reached patient')
         assert @patient.send :contact_made?
       end
     end
@@ -579,41 +694,41 @@ class PatientTest < ActiveSupport::TestCase
     describe 'age range tests' do
       it 'should return the right age for numbers' do
         @patient.age = nil
-        assert_nil @patient.age_range
+        assert_equal @patient.age_range, :not_specified
 
         [15, 17].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, 'Under 18'
+          assert_equal @patient.age_range, :under_18
         end
 
         [18, 20, 24].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, '18-24'
+          assert_equal @patient.age_range, :age18_24
         end
 
         [25, 30, 34].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, '25-34'
+          assert_equal @patient.age_range, :age25_34
         end
 
         [35, 40, 44].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, '35-44'
+          assert_equal @patient.age_range, :age35_44
         end
 
         [45, 50, 54].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, '45-54'
+          assert_equal @patient.age_range, :age45_54
         end
 
         [55, 60, 100].each do |age|
           @patient.update age: age
-          assert_equal @patient.age_range, '55+'
+          assert_equal @patient.age_range, :age55plus
         end
 
         [101, 'yolo'].each do |bad_age|
           @patient.age = bad_age
-          assert_equal @patient.age_range, 'Bad value'
+          assert_equal @patient.age_range, :bad_value
         end
       end
     end
@@ -629,5 +744,16 @@ class PatientTest < ActiveSupport::TestCase
           assert_equal @patient.preferred_language, 'Spanish'
       end
     end
+  end
+
+  def patient_to_hash(patient)
+    {
+      fund_pledge: patient.fund_pledge,
+      pledge_sent: patient.pledge_sent,
+      id: patient.id,
+      name: patient.name,
+      appointment_date: patient.appointment_date,
+      pledge_sent_at: patient.pledge_sent_at
+    }
   end
 end

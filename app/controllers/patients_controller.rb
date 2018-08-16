@@ -1,7 +1,8 @@
 # Create, edit, and update patients. The main patient view is edit.
 class PatientsController < ApplicationController
+  before_action :confirm_admin_user, only: [:destroy]
   before_action :redirect_unless_has_data_access, only: [:index]
-  before_action :find_patient, only: [:edit, :update, :download]
+  before_action :find_patient, only: [:edit, :update, :download, :destroy]
   rescue_from Mongoid::Errors::DocumentNotFound,
               with: -> { redirect_to root_path }
 
@@ -58,10 +59,7 @@ class PatientsController < ApplicationController
   end
 
   def update
-    if @patient.update_attributes params[:pledge_sent]
-       @patient.pledge_sent_at = Time.zone.now
-       @patient.pledge_sent_by = current_user
-    end
+    @patient.last_edited_by = current_user
     if @patient.update_attributes patient_params
       @patient.reload
       flash.now[:notice] = "Patient info successfully saved at #{Time.zone.now.display_timestamp}"
@@ -87,6 +85,16 @@ class PatientsController < ApplicationController
     else
       flash[:alert] = "Errors prevented this patient from being saved: #{@patient.errors.full_messages.to_sentence}"
       render 'data_entry'
+    end
+  end
+
+  def destroy
+    if @patient.okay_to_destroy? && @patient.destroy
+      flash[:notice] = "Patient successfully removed from database."
+      redirect_to authenticated_root_path
+    else
+      flash[:alert] = "Can't delete patients with pledges; please correct the patient record and try again."
+      redirect_to edit_patient_path(@patient)
     end
   end
 
@@ -135,7 +143,11 @@ class PatientsController < ApplicationController
 
     response.status = 200
 
-    self.response_body = Patient.to_csv
+    self.response_body = Enumerator.new do |y|
+      Patient.csv_header.each { |e| y << e }
+      Patient.to_csv.each { |e| y << e }
+      ArchivedPatient.to_csv.each { |e| y << e }
+    end
   end
 
   def set_headers(filename)

@@ -6,11 +6,6 @@
     "postdeploy": "bundle exec rake db:mongoid:create_indexes"
   },
   "env": {
-    "CM_RESOURCES_URL": {
-      "description": "usually a link to the google drive folder with CM resources in it",
-      "value": "",
-      "required": false
-    },
     "CSP_VIOLATION_URI": {
       "description": "from your CSP report endpoint",
       "value": "26d24d139baa52b71da9637b14c7d17b.report-uri.io/r/default"
@@ -48,7 +43,7 @@
       "required": false
     },
     "FUND_MAILER_DOMAIN": {
-      "description": "domain you want emails to come from. Should be your fund's domain. e.g. dcabortionfund.org",
+      "description": "domain you want emails to come from. Should be your fund's domain. e.g. dcabortionfund.org for DCAF",
       "value": ""
     },
     "DARIA_LINES": {

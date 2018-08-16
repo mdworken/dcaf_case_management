@@ -1,5 +1,5 @@
-FROM ruby:2.4.2-alpine
-MAINTAINER Colin Fleming <c3flemin@gmail.com> 
+FROM ruby:2.5.1-alpine
+MAINTAINER Colin Fleming <c3flemin@gmail.com>
 
 # configure environment variable
 # note: move this to three ARG commands when CircleCI updates their docker
@@ -21,7 +21,7 @@ RUN apk update && apk upgrade && \
     ${APP_DEPENDENCIES} && \
     gem install bundler --no-ri --no-rdoc && \
     cd ${DCAF_DIR} ; bundle install && \
-    apk del ${BUILD_DEPENDENCIES} 
+    apk del ${BUILD_DEPENDENCIES}
 
 # symlink which nodejs to node
 RUN ln -s `which nodejs` /usr/bin/node

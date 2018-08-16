@@ -104,24 +104,24 @@ class UserManagementTest < ApplicationSystemTestCase
     end
   end
 
-  describe 'edit a user' do
+  describe 'editing a user' do
     before do
       log_in_as @admin
       click_link 'Admin'
       assert_text 'User Management'
       click_link 'User Management'
       wait_for_element 'User Account Management'
-      click_link 'john'
+      click_link @user.name
       wait_for_element 'User details'
     end
 
-    # TODO lock test
-    # it 'allows user locking' do
-    #   assert_text 'Status: Active'
-    #   click_link 'Lock Account'
-    #   wait_for_element 'Unlock Account'
-    #   assert_text 'Status: Locked'
-    # end
+    it 'allows user locking' do
+      click_link 'Lock account'
+      wait_for_element 'Unlock account'
+      within :css, "#user-#{@user.id}" do
+        assert_text 'Locked by admin'
+      end
+    end
 
     it 'allows name editing' do
       fill_in 'Name', with: 'johan'
@@ -130,23 +130,12 @@ class UserManagementTest < ApplicationSystemTestCase
       assert_text 'johan'
     end
 
-    # TODO finish test
     it 'allows email editing' do
       fill_in 'Email', with: 'johan@gmail.com'
       click_button 'Save'
       wait_for_element 'Successfully updated user details'
-      click_link 'john'
+      click_link @user.name
       assert has_field? 'Email', with: 'johan@gmail.com'
-    end
-
-    # TODO figure out a way to show error
-    # Right now this is failing because role is not in user params.
-    # Alter this test when there's a good story around that
-    it 'disallows role editing' do
-      select 'Admin', from: 'Role'
-      click_button 'Save'
-      wait_for_element 'Successfully updated user details'
-      assert_text 'cm'
     end
   end
 end

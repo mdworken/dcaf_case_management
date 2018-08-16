@@ -1,7 +1,11 @@
 <!-- locals: title, table_type (for div id and tbody div id), pregnancies, sortable, autosortable -->
 
 <div id="<%= table_type %>" class="margin-bottom">
-  <h1 class="border-bottom title"><%= title %></h1>
+  <h1 class="border-bottom title">
+    <%= title %>
+    <%= dashboard_table_content_tooltip_shell title %>    
+  </h1>
+
   <table class="table border-side" id="<%= table_type %>_table">
     <thead>
       <tr>
@@ -34,9 +38,9 @@
             <td class="blank-td"></td>
           <% else %>
             <% if current_user.patient_ids.include?(patient.id) %>
-              <td><%= link_to remove_from_call_list_glyphicon, remove_patient_path(current_user, patient), method: :patch, data: { confirm: "Are you sure you want to remove #{patient.name} from your call list?" },  remote: true %></td>
+              <td><%= link_to remove_from_call_list_glyphicon, remove_patient_path(patient), method: :patch, data: { confirm: "Are you sure you want to remove #{patient.name} from your call list?" },  remote: true %></td>
             <% else %>
-              <td><%= link_to "Add", add_patient_path(current_user, patient), method: :patch, remote: true %></td>
+              <td><%= link_to "Add", add_patient_path(patient), method: :patch, remote: true %></td>
             <% end %>
           <% end %>
           <td><%= link_to call_glyphicon, new_patient_call_path(patient), class:"call_button call-#{patient.primary_phone_display}", remote: true %> </td>
@@ -45,4 +49,7 @@
       <% end %>
     </tbody>
   </table>
+  <% if table_type == 'call_list' && current_user.patients.count.nonzero? %>
+    <%= link_to "Clear your call list", clear_current_user_call_list_path, class: "pull-right text-danger", data: { confirm: "Are you sure you want to clear your current call list? This will also clear completed calls." }, method: :patch, remote: true %>
+  <% end %>
 </div>
